@@ -53,6 +53,14 @@ except importlib.metadata.PackageNotFoundError:
     help="Filter expression (e.g., 'dte>300', 'dte>10, dte<15', 'dte>300 + strike<100')",
 )
 @click.option("--filter-help", is_flag=True, help="Show help for filter expressions and exit")
+@click.option(
+    "--sort",
+    "sort_by",
+    type=click.Choice(["return", "strike", "dte", "volume", "efficiency", "leverage", "prob"], case_sensitive=False),
+    default="return",
+    show_default=True,
+    help="Sort options by this field",
+)
 @click.option("--web", "-w", is_flag=True, help="Launch interactive web interface")
 @click.option("--port", type=int, default=8000, help="Port for web interface")
 @click.option("--host", type=str, default="127.0.0.1", help="Host for web interface")
@@ -78,6 +86,7 @@ def display_plot(
     show_all,
     filter_expr,
     filter_help,
+    sort_by,
     web,
     port,
     host,
@@ -200,6 +209,7 @@ def display_plot(
         options_list = format_options_for_display(
             ticker,
             "calls",
+            sort_by=sort_by,
             max_expiry=use_max_expiry,
             min_dte=parsed_min_dte,
             show_all=use_show_all,
@@ -217,6 +227,7 @@ def display_plot(
         options_list = format_options_for_display(
             ticker,
             "puts",
+            sort_by=sort_by,
             max_expiry=use_max_expiry,
             min_dte=parsed_min_dte,
             show_all=use_show_all,

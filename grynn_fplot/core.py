@@ -374,6 +374,76 @@ def calculate_black_scholes_delta(spot_price: float, strike: float, time_to_expi
         return norm.cdf(d1) - 1
 
 
+def calculate_bs_greeks(
+    spot_price: float,
+    strike: float,
+    time_to_expiry: float,
+    risk_free_rate: float = 0.05,
+    volatility: float = 0.30,
+    option_type: str = "call",
+) -> dict:
+    """Calculate full Black-Scholes Greeks in a single pass.
+
+    Computes d1 and d2 once and derives all Greeks from them, avoiding redundant
+    recalculation when multiple Greeks are needed.
+
+    Args:
+        spot_price: Current stock price (S)
+        strike: Strike price (K)
+        time_to_expiry: Time to expiry in years (T)
+        risk_free_rate: Risk-free interest rate (r), default 5%
+        volatility: Implied volatility (σ), default 30%
+        option_type: 'call' or 'calls' or 'put' or 'puts'
+
+    Returns:
+        Dict with keys:
+            delta: Option delta (0 to 1 for calls, -1 to 0 for puts)
+            gamma: Rate of change of delta per $1 move in underlying
+            theta: Daily time decay in $ per share (negative for long options)
+            vega: $ change per 1% absolute move in implied volatility
+            prob_itm: Risk-neutral probability of expiring in the money (N(d2))
+    """
+    from scipy.stats import norm
+    from math import log, sqrt, exp
+
+    empty = {"delta": 0.0, "gamma": 0.0, "theta": 0.0, "vega": 0.0, "prob_itm": 0.0}
+    if spot_price <= 0 or strike <= 0 or time_to_expiry <= 0 or volatility <= 0:
+        return empty
+
+    S, K, T, r, sigma = spot_price, strike, time_to_expiry, risk_free_rate, volatility
+    sqrt_T = sqrt(T)
+
+    d1 = (log(S / K) + (r + 0.5 * sigma ** 2) * T) / (sigma * sqrt_T)
+    d2 = d1 - sigma * sqrt_T
+
+    n_d1 = norm.pdf(d1)  # Standard normal PDF at d1
+
+    # Gamma is identical for calls and puts
+    gamma = n_d1 / (S * sigma * sqrt_T)
+
+    # Vega: $ change per 1% absolute move in IV (per-share basis)
+    vega = S * sqrt_T * n_d1 / 100.0
+
+    is_call = option_type.lower() in ["call", "calls"]
+    if is_call:
+        delta = norm.cdf(d1)
+        prob_itm = norm.cdf(d2)
+        # Theta: annualized formula divided by 365 = daily $ per share
+        theta = (-(S * n_d1 * sigma) / (2 * sqrt_T) - r * K * exp(-r * T) * norm.cdf(d2)) / 365.0
+    else:
+        delta = norm.cdf(d1) - 1
+        prob_itm = norm.cdf(-d2)
+        theta = (-(S * n_d1 * sigma) / (2 * sqrt_T) + r * K * exp(-r * T) * norm.cdf(-d2)) / 365.0
+
+    return {
+        "delta": delta,
+        "gamma": gamma,
+        "theta": theta,      # daily $ decay per share (negative for long options)
+        "vega": vega,        # $ per 1% IV change per share
+        "prob_itm": prob_itm,  # risk-neutral probability of expiring ITM
+    }
+
+
 def calculate_implied_leverage(spot_price: float, option_price: float, strike: float,
                                time_to_expiry: float, option_type: str = "call",
                                risk_free_rate: float = 0.05, volatility: float = 0.30) -> float:
@@ -531,14 +601,14 @@ def format_options_for_display(
     Args:
         ticker: Stock ticker symbol
         option_type: 'calls' or 'puts'
-        sort_by: 'strike', 'dte', 'volume', or 'return' (default: 'return')
+        sort_by: 'strike', 'dte', 'volume', 'return', 'efficiency', 'leverage', or 'prob'
         max_expiry: Maximum expiry time (e.g., '3m', '6m', '1y'). Default: '6m'
         min_dte: Minimum days to expiry (optional)
         show_all: Show all available expiries (overrides max_expiry)
         filter_ast: Parsed filter AST for advanced filtering (optional)
     """
     from scipy import stats
-    
+
     options_data = fetch_options_data(ticker)
 
     if not options_data:
@@ -569,6 +639,23 @@ def format_options_for_display(
             strike = option.get("strike", 0)
             volume = option.get("volume", 0) or 0  # Handle None values
             last_price = option.get("lastPrice", 0) or 0
+            bid = option.get("bid", 0) or 0
+            ask = option.get("ask", 0) or 0
+            implied_vol = option.get("impliedVolatility", None)
+
+            # Use mid-price for calculations; fall back to last if no bid/ask
+            if bid > 0 and ask > 0:
+                mid_price = (bid + ask) / 2.0
+            else:
+                mid_price = last_price
+
+            calc_price = mid_price if mid_price > 0 else last_price
+
+            # Flag if mid and last diverge by more than 5% (stale last price)
+            price_stale = (
+                mid_price > 0 and last_price > 0 and
+                abs(mid_price - last_price) / last_price > 0.05
+            )
 
             # Get last trade date and calculate days since last trade
             last_trade_date = option.get("lastTradeDate", None)
@@ -591,12 +678,12 @@ def format_options_for_display(
                 except Exception:
                     lt_days = None
 
-            # Calculate return metric based on option type
-            if option_type == "calls" and last_price > 0:
-                return_metric = calculate_cagr_to_breakeven(spot_price, strike, last_price, dte)
+            # Calculate return metric using mid-price for accuracy
+            if option_type == "calls" and calc_price > 0:
+                return_metric = calculate_cagr_to_breakeven(spot_price, strike, calc_price, dte)
                 return_str = f"{return_metric:.2%}"
-            elif option_type == "puts" and last_price > 0:
-                return_metric = calculate_put_annualized_return(spot_price, last_price, dte)
+            elif option_type == "puts" and calc_price > 0:
+                return_metric = calculate_put_annualized_return(spot_price, calc_price, dte)
                 return_str = f"{return_metric:.2%}"
             else:
                 # No valid price for calculation - display N/A and set metric to None
@@ -604,31 +691,34 @@ def format_options_for_display(
                 return_str = "N/A"
                 return_metric = None
 
-            # Calculate implied leverage using implied volatility from Yahoo Finance
-            # Only calculate if implied volatility is available (no default fallback)
-            leverage = None
-            if last_price > 0 and strike > 0 and dte > 0:
+            # Calculate full Greeks using a single Black-Scholes pass
+            # Only when implied volatility is available from Yahoo Finance (no default fallback)
+            delta = gamma = theta = vega = prob_itm = leverage = None
+            if calc_price > 0 and strike > 0 and dte > 0 and implied_vol and implied_vol > 0:
                 time_to_expiry_years = dte / 365.0
-                # Get implied volatility from Yahoo Finance data
-                implied_vol = option.get("impliedVolatility", None)
-                if implied_vol and implied_vol > 0:
-                    # Use actual market implied volatility
-                    leverage = calculate_implied_leverage(
-                        spot_price, last_price, strike, time_to_expiry_years, option_type,
-                        volatility=implied_vol
-                    )
-                # If no implied volatility available, leverage remains None (will display as N/A)
+                greeks = calculate_bs_greeks(
+                    spot_price, strike, time_to_expiry_years,
+                    volatility=implied_vol, option_type=option_type,
+                )
+                delta = greeks["delta"]
+                gamma = greeks["gamma"]
+                theta = greeks["theta"]
+                vega = greeks["vega"]
+                prob_itm = greeks["prob_itm"]
+                leverage = abs(delta) * (spot_price / calc_price)
 
             # Calculate strike percentage (% above/below spot)
             strike_pct = None
             if spot_price > 0 and strike > 0:
                 strike_pct = ((strike - spot_price) / spot_price) * 100
 
-            # Calculate raw efficiency (leverage / CAGR)
-            # Will be converted to percentile in second pass
+            # DTE-weighted raw efficiency: leverage / (CAGR × √(DTE/365))
+            # The √T scaling prevents short-dated options from gaming the metric,
+            # consistent with how volatility itself scales with √T.
             raw_efficiency = None
-            if leverage and leverage > 0 and return_metric and return_metric > 0:
-                raw_efficiency = leverage / return_metric
+            if leverage and leverage > 0 and return_metric and return_metric > 0 and dte > 0:
+                dte_weight = (dte / 365.0) ** 0.5
+                raw_efficiency = leverage / (return_metric * dte_weight)
 
             # Store option data for first pass
             raw_options.append({
@@ -636,10 +726,19 @@ def format_options_for_display(
                 "strike": strike,
                 "dte": dte,
                 "volume": volume,
-                "price": last_price,
+                "mid_price": mid_price,
+                "last_price": last_price,
+                "calc_price": calc_price,
+                "price_stale": price_stale,
                 "return_metric": return_metric,
                 "return_str": return_str,
                 "leverage": leverage,
+                "delta": delta,
+                "gamma": gamma,
+                "theta": theta,
+                "vega": vega,
+                "prob_itm": prob_itm,
+                "implied_vol": implied_vol,
                 "strike_pct": strike_pct,
                 "lt_days": lt_days,
                 "raw_efficiency": raw_efficiency,
@@ -648,21 +747,23 @@ def format_options_for_display(
 
     # Second pass: calculate efficiency percentiles
     valid_efficiencies = [opt["raw_efficiency"] for opt in raw_options if opt["raw_efficiency"] is not None]
-    
+
     # Build final formatted options with efficiency percentiles
     formatted_options = []
     for opt in raw_options:
         # Calculate efficiency percentile (0-100)
         efficiency = None
         if opt["raw_efficiency"] is not None and len(valid_efficiencies) > 0:
-            efficiency = stats.percentileofscore(valid_efficiencies, opt["raw_efficiency"], kind='rank')
-        
+            efficiency = stats.percentileofscore(valid_efficiencies, opt["raw_efficiency"], kind="rank")
+
         # Create option data dict for filtering
-        # Field aliases: ret/ar for return, sp for strike_pct, lt_days for last trade days, lev for leverage, eff for efficiency
+        # Field aliases: ret/ar for return, sp for strike_pct, lev for leverage, eff for efficiency,
+        #                th for theta, prob/prob_itm for probability ITM
         option_data = {
             "dte": opt["dte"],
             "volume": opt["volume"],
-            "price": opt["price"],
+            "price": opt["calc_price"],
+            "mid": opt["mid_price"],
             "return": opt["return_metric"],
             "ret": opt["return_metric"],
             "ar": opt["return_metric"],
@@ -673,34 +774,56 @@ def format_options_for_display(
             "lev": opt["leverage"],
             "efficiency": efficiency,
             "eff": efficiency,
+            "prob": opt["prob_itm"],
+            "prob_itm": opt["prob_itm"],
+            "theta": opt["theta"],
+            "th": opt["theta"],
+            "vega": opt["vega"],
+            "gamma": opt["gamma"],
+            "iv": opt["implied_vol"],
         }
-        
+
         # Apply filter_ast if provided
         if filter_ast and not evaluate_filter(filter_ast, option_data):
             continue
-        
-        # Format display string
-        option_type_letter = "C" if opt["option_type"] == "calls" else "P"
-        leverage_str = f"{opt['leverage']:.1f}x" if opt['leverage'] and opt['leverage'] > 0 else "N/A"
+
+        # Build price display string; flag stale last prices
+        if opt["price_stale"]:
+            price_display = f"mid${opt['mid_price']:.2f}/last${opt['last_price']:.2f}"
+        else:
+            price_display = f"${opt['calc_price']:.2f}"
+
+        leverage_str = f"{opt['leverage']:.1f}x" if opt["leverage"] and opt["leverage"] > 0 else "N/A"
         efficiency_str = f"{efficiency:.0f}" if efficiency is not None else "N/A"
-        
-        formatted_option = (
-            f"{opt['ticker'].upper()} {opt['strike']:.0f}{option_type_letter} {opt['dte']}DTE "
-            f"(${opt['price']:.2f}, {opt['return_str']}, {leverage_str}, eff:{efficiency_str})"
-        )
-        
+        prob_str = f", p:{opt['prob_itm']:.0%}" if opt["prob_itm"] is not None else ""
+        theta_str = f", θ{opt['theta']:.2f}" if opt["theta"] is not None else ""
+
+        option_type_letter = "C" if opt["option_type"] == "calls" else "P"
+
+        if opt["option_type"] == "calls":
+            formatted_option = (
+                f"{opt['ticker'].upper()} {opt['strike']:.0f}{option_type_letter} {opt['dte']}DTE "
+                f"({price_display}, {opt['return_str']}, {leverage_str}{prob_str}{theta_str}, eff:{efficiency_str})"
+            )
+        else:
+            formatted_option = (
+                f"{opt['ticker'].upper()} {opt['strike']:.0f}{option_type_letter} {opt['dte']}DTE "
+                f"({price_display}, {opt['return_str']}, {leverage_str}{prob_str}, eff:{efficiency_str})"
+            )
+
         # Store for sorting
         formatted_options.append({
             "display": formatted_option,
             "strike": opt["strike"],
             "dte": opt["dte"],
             "volume": opt["volume"],
-            "price": opt["price"],
+            "price": opt["calc_price"],
             "return_metric": opt["return_metric"],
             "leverage": opt["leverage"],
+            "prob_itm": opt["prob_itm"],
             "efficiency": efficiency,
         })
-    
+
     # Sort based on the specified criteria
     if sort_by == "strike":
         formatted_options.sort(key=lambda x: x["strike"])
@@ -709,15 +832,18 @@ def format_options_for_display(
     elif sort_by == "volume":
         formatted_options.sort(key=lambda x: x["volume"], reverse=True)
     elif sort_by == "return":
-        # For calls: ascending (smallest to largest return)
-        # For puts: descending (largest to smallest return)
+        # For calls: ascending (smallest to largest breakeven CAGR = cheapest hurdle first)
+        # For puts: descending (largest to smallest annualized return)
         if option_type == "calls":
-            formatted_options.sort(key=lambda x: x["return_metric"] if x["return_metric"] is not None else float('inf'))
-        else:  # puts
-            formatted_options.sort(key=lambda x: x["return_metric"] if x["return_metric"] is not None else float('-inf'), reverse=True)
+            formatted_options.sort(key=lambda x: x["return_metric"] if x["return_metric"] is not None else float("inf"))
+        else:
+            formatted_options.sort(key=lambda x: x["return_metric"] if x["return_metric"] is not None else float("-inf"), reverse=True)
     elif sort_by == "efficiency":
-        # Sort by efficiency percentile (highest first)
         formatted_options.sort(key=lambda x: x["efficiency"] if x["efficiency"] is not None else -1, reverse=True)
-    
+    elif sort_by == "leverage":
+        formatted_options.sort(key=lambda x: x["leverage"] if x["leverage"] is not None else -1, reverse=True)
+    elif sort_by == "prob":
+        formatted_options.sort(key=lambda x: x["prob_itm"] if x["prob_itm"] is not None else -1, reverse=True)
+
     # Return just the display strings
     return [option["display"] for option in formatted_options]

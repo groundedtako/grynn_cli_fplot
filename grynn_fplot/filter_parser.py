@@ -70,6 +70,45 @@ FILTER_FIELDS = {
         "example": "efficiency>80",
     },
     "eff": {"description": "Alias for 'efficiency'", "type": "float", "alias_of": "efficiency", "example": "eff>80"},
+    "prob": {
+        "description": "Probability of expiring in the money — N(d2), risk-neutral (0.0–1.0 scale)",
+        "type": "float",
+        "aliases": ["prob_itm"],
+        "example": "prob>0.30",
+    },
+    "prob_itm": {
+        "description": "Alias for 'prob'",
+        "type": "float",
+        "alias_of": "prob",
+        "example": "prob_itm>0.30",
+    },
+    "theta": {
+        "description": "Daily theta decay in $ per share (negative for long options)",
+        "type": "float",
+        "aliases": ["th"],
+        "example": "theta>-0.05",
+    },
+    "th": {"description": "Alias for 'theta'", "type": "float", "alias_of": "theta", "example": "th>-0.05"},
+    "vega": {
+        "description": "Vega: $ change per 1% absolute move in implied volatility",
+        "type": "float",
+        "example": "vega<0.10",
+    },
+    "gamma": {
+        "description": "Gamma: rate of change of delta per $1 move in underlying",
+        "type": "float",
+        "example": "gamma<0.05",
+    },
+    "iv": {
+        "description": "Implied volatility from Yahoo Finance (decimal, e.g. 0.30 = 30%)",
+        "type": "float",
+        "example": "iv<0.50",
+    },
+    "mid": {
+        "description": "Mid-price of option: (bid + ask) / 2",
+        "type": "float",
+        "example": "mid<5.0",
+    },
 }
 
 
